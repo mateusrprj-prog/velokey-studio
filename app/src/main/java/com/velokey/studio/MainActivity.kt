@@ -1,349 +1,373 @@
 package com.velokey.studio
 
+import android.net.Uri
 import android.os.Bundle
-import android.os.SystemClock
 import android.view.MotionEvent
+import android.view.SurfaceView
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.material3.Button
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Slider
+import androidx.compose.material3.Text
+import androidx.compose.material3.darkColorScheme
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
-import com.velokey.studio.scene.CamKey
 import com.velokey.studio.scene.Playback
 import com.velokey.studio.scene.VeloRenderer
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.isActive
-import org.rajawali3d.view.ISurface
-import org.rajawali3d.view.SurfaceView
-
-val BgDark = Color(0xFF0A0A0E)
-val PanelDark = Color(0xFF14141C)
-val AccentCyan = Color(0xFF00F0FF)
-val AccentPurple = Color(0xFF7B2CBF)
-val AccentGreen = Color(0xFF00E676)
 
 class MainActivity : ComponentActivity() {
+
+    private var velo: VeloRenderer? = null
+
+    private val pickGlb = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
+        if (uri != null) {
+            try {
+                val bytes = contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                if (bytes == null) {
+                    Toast.makeText(this, "Nao consegui ler o arquivo", Toast.LENGTH_SHORT).show()
+                } else {
+                    val ok = velo?.importGlb(bytes) ?: false
+                    val msg = if (ok) "Modelo importado (filho do Null)" else "Arquivo nao e um GLB valido"
+                    Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
+                }
+            } catch (e: Exception) {
+                Toast.makeText(this, "Erro: ${e.message}", Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
-            MaterialTheme(colorScheme = darkColorScheme(background = BgDark)) {
-                VeloKeyEditorScreen()
+            MaterialTheme(colorScheme = darkColorScheme()) {
+                AppScreen(
+                    onRenderer = { velo = it },
+                    onImport = { pickGlb.launch(arrayOf("*/*")) },
+                    onExport = {
+                        Toast.makeText(this, "Export MP4: em breve", Toast.LENGTH_SHORT).show()
+                    }
+                )
             }
         }
     }
-}
 
-fun formatTime(ms: Long): String {
-    val totalS = ms / 1000
-    return "%02d:%02d:%03d".format(totalS / 60, totalS % 60, ms % 1000)
+    override fun onResume() {
+        super.onResume()
+        velo?.start()
+    }
+
+    override fun onPause() {
+        velo?.stop()
+        super.onPause()
+    }
+
+    override fun onDestroy() {
+        velo?.destroy()
+        velo = null
+        super.onDestroy()
+    }
 }
 
 @Composable
-fun VeloKeyEditorScreen() {
-    val context = LocalContext.current
-
-    var px by remember { mutableStateOf(0f) }
-    var py by remember { mutableStateOf(2f) }
-    var pz by remember { mutableStateOf(12f) }
-    var rx by remember { mutableStateOf(0f) }
-    var ry by remember { mutableStateOf(0f) }
-    var rz by remember { mutableStateOf(0f) }
-    var nx by remember { mutableStateOf(0f) }
-    var ny by remember { mutableStateOf(0f) }
-    var nz by remember { mutableStateOf(0f) }
-
-    var timeMsUi by remember { mutableStateOf(0L) }
+fun AppScreen(
+    onRenderer: (VeloRenderer) -> Unit,
+    onImport: () -> Unit,
+    onExport: () -> Unit
+) {
     var playing by remember { mutableStateOf(false) }
-    var showCurve by remember { mutableStateOf(true) }
-
-    LaunchedEffect(Unit) {
-        Playback.setLivePose(px, py, pz, rx, ry, rz)
-        Playback.setNull(nx, ny, nz)
-    }
-    LaunchedEffect(px, py, pz, rx, ry, rz) { Playback.setLivePose(px, py, pz, rx, ry, rz) }
-    LaunchedEffect(nx, ny, nz) { Playback.setNull(nx, ny, nz) }
+    var tab by remember { mutableStateOf(0) }
 
     LaunchedEffect(playing) {
         if (playing) {
-            Playback.playing.set(true)
-            var last = SystemClock.elapsedRealtime()
-            while (playing && isActive) {
-                val now = SystemClock.elapsedRealtime()
-                val dt = now - last
+            var last = withFrameNanos { it }
+            while (true) {
+                val now = withFrameNanos { it }
+                val dtMs = (now - last) / 1_000_000.0
                 last = now
-                val t = Playback.timeMs.get()
-                val t01 = (t.toFloat() / Playback.DURATION_MS).coerceIn(0f, 1f)
-                val sp = Playback.speedAt(t01)
-                var nt = t + (dt * sp).toLong()
-                if (nt >= Playback.DURATION_MS) nt = 0
-                Playback.timeMs.set(nt)
-                timeMsUi = nt
-                delay(16)
+                val t01 = Playback.timeMs.toFloat() / Playback.DURATION_MS.toFloat()
+                var nt = Playback.timeMs + (dtMs * Playback.speedAt(t01)).toLong()
+                if (nt >= Playback.DURATION_MS) nt = 0L
+                Playback.seek(nt)
             }
-            Playback.playing.set(false)
         }
     }
 
-    val renderer = remember { VeloRenderer(context) }
-
     Column(
-        modifier = Modifier
+        Modifier
             .fillMaxSize()
-            .background(BgDark)
-            .systemBarsPadding()
+            .background(Color(0xFF121212))
     ) {
+        // Barra superior
         Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text("VeloKey Studio", color = Color.White, fontSize = 17.sp)
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("3D • v0.3", color = AccentCyan, fontSize = 11.sp)
-                Spacer(Modifier.width(8.dp))
-                Button(
-                    onClick = { Toast.makeText(context, "Export MP4: em breve", Toast.LENGTH_SHORT).show() },
-                    colors = ButtonDefaults.buttonColors(containerColor = AccentGreen),
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
-                ) { Text("Export", color = Color.Black, fontSize = 12.sp) }
-            }
-        }
-
-        Box(
-            modifier = Modifier
-                .weight(1.25f)
+            Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 10.dp)
-                .clip(RoundedCornerShape(14.dp))
-                .background(Color.Black)
-                .border(1.dp, Color(0xFF22222E), RoundedCornerShape(14.dp))
+                .padding(horizontal = 10.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            AndroidView(
-                factory = { ctx ->
-                    val sv = SurfaceView(ctx)
-                    sv.setFrameRate(60.0)
-                    sv.setRenderMode(ISurface.RENDERMODE_CONTINUOUSLY)
-                    sv.setSurfaceRenderer(renderer)
-
-                    var lastX = 0f
-                    var lastY = 0f
-                    sv.setOnTouchListener { _, ev: MotionEvent ->
-                        when (ev.actionMasked) {
-                            MotionEvent.ACTION_DOWN -> {
-                                lastX = ev.x
-                                lastY = ev.y
-                            }
-                            MotionEvent.ACTION_MOVE -> {
-                                val dx = ev.x - lastX
-                                val dy = ev.y - lastY
-                                lastX = ev.x
-                                lastY = ev.y
-                                ry = (ry + dx * 0.25f) % 360f
-                                rx = (rx + dy * 0.25f).coerceIn(-89f, 89f)
-                            }
-                        }
-                        true
-                    }
-                    sv
-                },
-                modifier = Modifier.fillMaxSize()
-            )
             Text(
-                "Arraste na cena: orbita a câmera 3D",
-                color = Color.White.copy(alpha = 0.5f),
-                fontSize = 10.sp,
-                modifier = Modifier.align(Alignment.BottomCenter).padding(6.dp)
+                "VeloKey Studio",
+                color = Color.White,
+                fontSize = 16.sp,
+                modifier = Modifier.weight(1f)
+            )
+            Button(onClick = onImport, contentPadding = PaddingValues(horizontal = 10.dp)) {
+                Text("Importar GLB", fontSize = 12.sp)
+            }
+            Button(onClick = onExport, contentPadding = PaddingValues(horizontal = 10.dp)) {
+                Text("Export", fontSize = 12.sp)
+            }
+        }
+
+        // Preview 3D
+        AndroidView(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(280.dp),
+            factory = { ctx ->
+                val sv = SurfaceView(ctx)
+                val r = VeloRenderer(sv)
+                onRenderer(r)
+                r.start()
+                var lx = 0f
+                var ly = 0f
+                sv.setOnTouchListener { _, e ->
+                    when (e.actionMasked) {
+                        MotionEvent.ACTION_DOWN -> {
+                            lx = e.x
+                            ly = e.y
+                        }
+                        MotionEvent.ACTION_MOVE -> {
+                            val dx = e.x - lx
+                            val dy = e.y - ly
+                            lx = e.x
+                            ly = e.y
+                            val l = Playback.live
+                            Playback.editLive(
+                                l.copy(
+                                    ry = l.ry + dx * 0.25f,
+                                    rx = (l.rx + dy * 0.25f).coerceIn(-89f, 89f)
+                                )
+                            )
+                        }
+                    }
+                    true
+                }
+                sv
+            }
+        )
+
+        // Controles
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 10.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Button(onClick = { playing = !playing }, contentPadding = PaddingValues(horizontal = 12.dp)) {
+                Text(if (playing) "❚❚" else "▶")
+            }
+            Button(onClick = { Playback.addKey() }, contentPadding = PaddingValues(horizontal = 10.dp)) {
+                Text("+ KEY", fontSize = 12.sp)
+            }
+            Button(onClick = { Playback.clearKeys() }, contentPadding = PaddingValues(horizontal = 10.dp)) {
+                Text("Limpar", fontSize = 12.sp)
+            }
+            Button(onClick = { tab = if (tab == 0) 1 else 0 }, contentPadding = PaddingValues(horizontal = 10.dp)) {
+                Text(if (tab == 0) "Curva" else "Timeline", fontSize = 12.sp)
+            }
+            Spacer(Modifier.weight(1f))
+            Text(
+                String.format("%.1f s", Playback.timeMs / 1000f),
+                color = Color.LightGray,
+                fontSize = 12.sp
             )
         }
 
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(formatTime(timeMsUi), color = AccentGreen, fontSize = 12.sp)
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Button(
-                    onClick = { playing = !playing },
-                    colors = ButtonDefaults.buttonColors(containerColor = AccentPurple),
-                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 4.dp)
-                ) { Text(if (playing) "❚❚" else "▶", color = Color.White, fontSize = 13.sp) }
-                Spacer(Modifier.width(6.dp))
-                OutlinedButton(
-                    onClick = { Playback.addKey(CamKey(Playback.timeMs.get(), px, py, pz, rx, ry, rz)) },
-                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
-                ) { Text("+ KEY", color = AccentCyan, fontSize = 11.sp) }
-                Spacer(Modifier.width(6.dp))
-                OutlinedButton(
-                    onClick = { Playback.keys.clear() },
-                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
-                ) { Text("Limpar", color = Color.Gray, fontSize = 11.sp) }
-                Spacer(Modifier.width(6.dp))
-                OutlinedButton(
-                    onClick = { showCurve = !showCurve },
-                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
-                ) { Text(if (showCurve) "Timeline" else "Curva", color = Color.White, fontSize = 11.sp) }
+        // Timeline ou curva
+        if (tab == 0) {
+            TimelineView(
+                Modifier
+                    .fillMaxWidth()
+                    .height(80.dp)
+                    .padding(horizontal = 10.dp)
+            ) { t ->
+                playing = false
+                Playback.seek(t)
             }
+        } else {
+            SpeedCurveView(
+                Modifier
+                    .fillMaxWidth()
+                    .height(80.dp)
+                    .padding(horizontal = 10.dp)
+            )
         }
 
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(150.dp)
-                .padding(horizontal = 10.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        // Sliders
+        Column(
+            Modifier
+                .weight(1f)
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 10.dp)
         ) {
-            Column(
-                modifier = Modifier.weight(1f).verticalScroll(rememberScrollState())
-                    .clip(RoundedCornerShape(10.dp)).background(PanelDark).padding(8.dp)
-            ) {
-                Text("Câmera 3D (Position / Rotation)", color = AccentCyan, fontSize = 11.sp)
-                PoseSlider("Pos X", px, -30f..30f, { px = it })
-                PoseSlider("Pos Y", py, -30f..30f, { py = it })
-                PoseSlider("Pos Z", pz, -40f..40f, { pz = it })
-                PoseSlider("Rot X", rx, -89f..89f, { rx = it })
-                PoseSlider("Rot Y", ry, -180f..180f, { ry = it })
-                PoseSlider("Rot Z", rz, -180f..180f, { rz = it })
-            }
-            Column(
-                modifier = Modifier.weight(1f).verticalScroll(rememberScrollState())
-                    .clip(RoundedCornerShape(10.dp)).background(PanelDark).padding(8.dp)
-            ) {
-                Text("Null Object (move o cubo filho)", color = AccentGreen, fontSize = 11.sp)
-                PoseSlider("Null X", nx, -20f..20f, { nx = it }, AccentGreen)
-                PoseSlider("Null Y", ny, -20f..20f, { ny = it }, AccentGreen)
-                PoseSlider("Null Z", nz, -20f..20f, { nz = it }, AccentGreen)
-                Spacer(Modifier.height(6.dp))
-                Text("Keyframes: ${Playback.keys.size}", color = Color.Gray, fontSize = 10.sp)
-            }
-        }
+            val c = Playback.live
+            Text("Camera", color = Color.White, fontSize = 13.sp)
+            SliderRow("Pos X", c.px, -20f..20f) { Playback.editLive(Playback.live.copy(px = it)) }
+            SliderRow("Pos Y", c.py, -20f..20f) { Playback.editLive(Playback.live.copy(py = it)) }
+            SliderRow("Pos Z", c.pz, -30f..30f) { Playback.editLive(Playback.live.copy(pz = it)) }
+            SliderRow("Rot X", c.rx, -89f..89f) { Playback.editLive(Playback.live.copy(rx = it)) }
+            SliderRow("Rot Y", c.ry, -180f..180f) { Playback.editLive(Playback.live.copy(ry = it)) }
+            SliderRow("Rot Z", c.rz, -180f..180f) { Playback.editLive(Playback.live.copy(rz = it)) }
 
-        Box(
-            modifier = Modifier.weight(1f).fillMaxWidth().padding(10.dp)
-                .clip(RoundedCornerShape(10.dp)).background(PanelDark)
-        ) {
-            if (showCurve) {
-                Column(Modifier.fillMaxSize().padding(10.dp)) {
-                    Text("Curva de Velocidade (controla a velocidade do play)", color = AccentCyan, fontSize = 11.sp)
-                    SpeedCurveView(Modifier.weight(1f).fillMaxWidth())
-                }
-            } else {
-                Column(Modifier.fillMaxSize().padding(10.dp)) {
-                    Text("Timeline — toque p/ buscar • bolinhas = keyframes", color = AccentGreen, fontSize = 11.sp)
-                    TimelineView(timeMsUi, Modifier.weight(1f).fillMaxWidth()) { t ->
-                        Playback.timeMs.set(t)
-                        timeMsUi = t
-                    }
-                }
-            }
+            val n = Playback.nullPos
+            Text("Null Object", color = Color.White, fontSize = 13.sp)
+            SliderRow("Pos X", n.x, -8f..8f) { Playback.nullPos = Playback.nullPos.copy(x = it) }
+            SliderRow("Pos Y", n.y, -2f..8f) { Playback.nullPos = Playback.nullPos.copy(y = it) }
+            SliderRow("Pos Z", n.z, -8f..8f) { Playback.nullPos = Playback.nullPos.copy(z = it) }
         }
     }
 }
 
 @Composable
-fun PoseSlider(
+fun SliderRow(
     label: String,
     value: Float,
     range: ClosedFloatingPointRange<Float>,
-    onChange: (Float) -> Unit,
-    accent: Color = AccentCyan
+    onChange: (Float) -> Unit
 ) {
-    Column(Modifier.fillMaxWidth()) {
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            Text(label, color = accent, fontSize = 10.sp)
-            Text("%.1f".format(value), color = Color.White, fontSize = 10.sp)
-        }
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(label, color = Color.LightGray, fontSize = 12.sp, modifier = Modifier.width(52.dp))
         Slider(
-            value = value,
+            value = value.coerceIn(range.start, range.endInclusive),
             onValueChange = onChange,
             valueRange = range,
-            modifier = Modifier.fillMaxWidth().height(22.dp),
-            colors = SliderDefaults.colors(thumbColor = accent, activeTrackColor = accent)
+            modifier = Modifier.weight(1f)
+        )
+        Text(
+            String.format("%.1f", value),
+            color = Color.LightGray,
+            fontSize = 12.sp,
+            modifier = Modifier.width(44.dp)
         )
     }
 }
 
 @Composable
-fun TimelineView(timeMs: Long, modifier: Modifier = Modifier, onSeek: (Long) -> Unit) {
+fun TimelineView(modifier: Modifier = Modifier, onSeek: (Long) -> Unit) {
     Canvas(
-        modifier = modifier.pointerInput(Unit) {
-            detectTapGestures { off ->
-                val w = size.width.toFloat()
-                if (w > 0) onSeek(((off.x / w).coerceIn(0f, 1f) * Playback.DURATION_MS).toLong())
+        modifier
+            .background(Color(0xFF1E1E1E))
+            .pointerInput(Unit) {
+                detectTapGestures { o ->
+                    val t = (o.x / size.width * Playback.DURATION_MS).toLong()
+                    onSeek(t.coerceIn(0L, Playback.DURATION_MS))
+                }
             }
-        }
+            .pointerInput(Unit) {
+                detectHorizontalDragGestures { change, _ ->
+                    val t = (change.position.x / size.width * Playback.DURATION_MS).toLong()
+                    onSeek(t.coerceIn(0L, Playback.DURATION_MS))
+                }
+            }
     ) {
         val w = size.width
         val h = size.height
-        val mid = h / 2f
-        drawLine(Color(0xFF2A2A38), Offset(0f, mid), Offset(w, mid), 5f)
-        for (i in 0..10) {
-            val x = w * i / 10f
-            drawLine(Color(0xFF3A3A48), Offset(x, mid - 8f), Offset(x, mid + 8f), 2f)
+        // marcas de segundo
+        for (s in 0..10) {
+            val x = w * s / 10f
+            drawLine(Color(0xFF444444), Offset(x, h * 0.65f), Offset(x, h), strokeWidth = 2f)
         }
+        // keyframes
         for (k in Playback.keys) {
-            drawCircle(AccentCyan, 9f, Offset((k.t.toFloat() / Playback.DURATION_MS) * w, mid))
+            val x = k.t.toFloat() / Playback.DURATION_MS.toFloat() * w
+            drawCircle(Color(0xFFFFC107), 9f, Offset(x, h * 0.4f))
         }
-        val ph = (timeMs.toFloat() / Playback.DURATION_MS) * w
-        drawLine(AccentGreen, Offset(ph, 0f), Offset(ph, h), 5f)
+        // playhead verde
+        val px = Playback.timeMs.toFloat() / Playback.DURATION_MS.toFloat() * w
+        drawLine(Color(0xFF00E676), Offset(px, 0f), Offset(px, h), strokeWidth = 4f)
     }
 }
 
 @Composable
 fun SpeedCurveView(modifier: Modifier = Modifier) {
+    var active by remember { mutableStateOf(1) }
     Canvas(
-        modifier = modifier.pointerInput(Unit) {
-            detectDragGestures { change, _ ->
-                val w = size.width.toFloat()
-                val h = size.height.toFloat()
-                if (w <= 0f || h <= 0f) return@detectDragGestures
-
-                val n = Offset(
-                    (change.position.x / w).coerceIn(0.05f, 0.95f),
-                    (1f - change.position.y / h).coerceIn(0.05f, 0.95f)
+        modifier
+            .background(Color(0xFF1E1E1E))
+            .pointerInput(Unit) {
+                detectDragGestures(
+                    onDragStart = { o ->
+                        val p1 = Offset(Playback.cp1.x * size.width, (1f - Playback.cp1.y) * size.height)
+                        val p2 = Offset(Playback.cp2.x * size.width, (1f - Playback.cp2.y) * size.height)
+                        active = if ((o - p1).getDistance() <= (o - p2).getDistance()) 1 else 2
+                    },
+                    onDrag = { change, _ ->
+                        val x = (change.position.x / size.width).coerceIn(0f, 1f)
+                        val y = 1f - (change.position.y / size.height).coerceIn(0f, 1f)
+                        if (active == 1) Playback.cp1 = Offset(x, y) else Playback.cp2 = Offset(x, y)
+                    }
                 )
-                val d1 = (n - Playback.cp1.value).getDistance()
-                val d2 = (n - Playback.cp2.value).getDistance()
-                if (d1 < d2) Playback.cp1.value = n else Playback.cp2.value = n
             }
-        }
     ) {
         val w = size.width
         val h = size.height
-        fun px(o: Offset) = Offset(o.x * w, (1f - o.y) * h)
-        val p0 = px(Offset(0f, 0f))
-        val p3 = px(Offset(1f, 1f))
-        val c1 = px(Playback.cp1.value)
-        val c2 = px(Playback.cp2.value)
-        val path = Path().apply {
-            moveTo(p0.x, p0.y)
-            cubicTo(c1.x, c1.y, c2.x, c2.y, p3.x, p3.y)
-        }
-        drawPath(path, AccentCyan, style = Stroke(width = 6f))
-        drawLine(Color.Gray, p0, c1, strokeWidth = 2f)
-        drawLine(Color.Gray, p3, c2, strokeWidth = 2f)
-        drawCircle(Color.White, radius = 14f, center = c1)
-        drawCircle(Color.White, radius = 14f, center = c2)
+        val start = Offset(0f, h * 0.5f)
+        val end = Offset(w, h * 0.5f)
+        val c1 = Offset(Playback.cp1.x * w, (1f - Playback.cp1.y) * h)
+        val c2 = Offset(Playback.cp2.x * w, (1f - Playback.cp2.y) * h)
+
+        // linha de 1x
+        drawLine(Color(0xFF444444), Offset(0f, h * 0.5f), Offset(w, h * 0.5f), strokeWidth = 2f)
+
+        val path = Path()
+        path.moveTo(start.x, start.y)
+        path.cubicTo(c1.x, c1.y, c2.x, c2.y, end.x, end.y)
+        drawPath(path, Color(0xFF00E676), style = Stroke(width = 5f))
+
+        drawLine(Color(0xFF888888), start, c1, strokeWidth = 2f)
+        drawLine(Color(0xFF888888), end, c2, strokeWidth = 2f)
+        drawCircle(Color(0xFFFFC107), 14f, c1)
+        drawCircle(Color(0xFFFFC107), 14f, c2)
+
+        // marcador do tempo atual
+        val px = Playback.timeMs.toFloat() / Playback.DURATION_MS.toFloat() * w
+        drawLine(Color(0x8800E676), Offset(px, 0f), Offset(px, h), strokeWidth = 2f)
     }
 }
