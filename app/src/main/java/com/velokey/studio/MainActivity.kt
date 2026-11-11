@@ -1,15 +1,21 @@
 package com.velokey.studio
 
+import android.opengl.GLSurfaceView
 import android.os.Bundle
+import android.os.SystemClock
+import android.view.MotionEvent
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.detectDragGestures
-import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -19,15 +25,22 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
+import com.velokey.studio.scene.CamKey
+import com.velokey.studio.scene.Playback
+import com.velokey.studio.scene.VeloRenderer
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 
 val BgDark = Color(0xFF0A0A0E)
 val PanelDark = Color(0xFF14141C)
 val AccentCyan = Color(0xFF00F0FF)
 val AccentPurple = Color(0xFF7B2CBF)
+val AccentGreen = Color(0xFF00E676)
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -40,10 +53,58 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+fun formatTime(ms: Long): String {
+    val totalS = ms / 1000
+    return "%02d:%02d:%03d".format(totalS / 60, totalS % 60, ms % 1000)
+}
+
 @Composable
 fun VeloKeyEditorScreen() {
-    var isCurveEditorOpen by remember { mutableStateOf(true) }
-    var isPlaying by remember { mutableStateOf(false) }
+    val context = LocalContext.current
+
+    var px by remember { mutableStateOf(0f) }
+    var py by remember { mutableStateOf(2f) }
+    var pz by remember { mutableStateOf(12f) }
+    var rx by remember { mutableStateOf(0f) }
+    var ry by remember { mutableStateOf(0f) }
+    var rz by remember { mutableStateOf(0f) }
+    var nx by remember { mutableStateOf(0f) }
+    var ny by remember { mutableStateOf(0f) }
+    var nz by remember { mutableStateOf(0f) }
+
+    var timeMsUi by remember { mutableStateOf(0L) }
+    var playing by remember { mutableStateOf(false) }
+    var showCurve by remember { mutableStateOf(true) }
+
+    LaunchedEffect(Unit) {
+        Playback.setLivePose(px, py, pz, rx, ry, rz)
+        Playback.setNull(nx, ny, nz)
+    }
+    LaunchedEffect(px, py, pz, rx, ry, rz) { Playback.setLivePose(px, py, pz, rx, ry, rz) }
+    LaunchedEffect(nx, ny, nz) { Playback.setNull(nx, ny, nz) }
+
+    LaunchedEffect(playing) {
+        if (playing) {
+            Playback.playing.set(true)
+            var last = SystemClock.elapsedRealtime()
+            while (playing && isActive) {
+                val now = SystemClock.elapsedRealtime()
+                val dt = now - last
+                last = now
+                val t = Playback.timeMs.get()
+                val t01 = (t.toFloat() / Playback.DURATION_MS).coerceIn(0f, 1f)
+                val sp = Playback.speedAt(t01)
+                var nt = t + (dt * sp).toLong()
+                if (nt >= Playback.DURATION_MS) nt = 0
+                Playback.timeMs.set(nt)
+                timeMsUi = nt
+                delay(16)
+            }
+            Playback.playing.set(false)
+        }
+    }
+
+    val renderer = remember { VeloRenderer(context) }
 
     Column(
         modifier = Modifier
@@ -51,198 +112,228 @@ fun VeloKeyEditorScreen() {
             .background(BgDark)
             .systemBarsPadding()
     ) {
-        // Barra Superior
         Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 12.dp),
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Text("VeloKey Studio", color = Color.White, fontSize = 18.sp)
-            Text("v0.1 • 120Hz", color = AccentCyan, fontSize = 12.sp)
+            Text("VeloKey Studio", color = Color.White, fontSize = 17.sp)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("3D • v0.3", color = AccentCyan, fontSize = 11.sp)
+                Spacer(Modifier.width(8.dp))
+                Button(
+                    onClick = { Toast.makeText(context, "Export MP4: Fase 4 (em breve)", Toast.LENGTH_SHORT).show() },
+                    colors = ButtonDefaults.buttonColors(containerColor = AccentGreen),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
+                ) { Text("Export", color = Color.Black, fontSize = 12.sp) }
+            }
         }
 
-        // Preview Multi-Touch (Use 2 dedos para girar e dar zoom!)
         Box(
             modifier = Modifier
-                .weight(1.2f)
+                .weight(1.25f)
                 .fillMaxWidth()
-                .padding(horizontal = 12.dp)
+                .padding(horizontal = 10.dp)
                 .clip(RoundedCornerShape(14.dp))
                 .background(Color.Black)
-                .border(1.dp, Color(0xFF22222E), RoundedCornerShape(14.dp)),
-            contentAlignment = Alignment.Center
+                .border(1.dp, Color(0xFF22222E), RoundedCornerShape(14.dp))
         ) {
-            InteractiveVideoPreview()
+            AndroidView(
+                factory = { ctx ->
+                    GLSurfaceView(ctx).apply {
+                        setEGLContextClientVersion(3)
+                        setEGLConfigChooser(8, 8, 8, 8, 16, 0)
+                        preserveEGLContextOnPause = true
+                        setRenderer(renderer)
+                        renderMode = GLSurfaceView.RENDERMODE_CONTINUOUSLY
+                        var lastX = 0f
+                        var lastY = 0f
+                        setOnTouchListener { _, ev ->
+                            when (ev.actionMasked) {
+                                MotionEvent.ACTION_DOWN -> { lastX = ev.x; lastY = ev.y }
+                                MotionEvent.ACTION_MOVE -> {
+                                    val dx = ev.x - lastX
+                                    val dy = ev.y - lastY
+                                    lastX = ev.x; lastY = ev.y
+                                    ry = (ry + dx * 0.25f) % 360f
+                                    rx = (rx + dy * 0.25f).coerceIn(-89f, 89f)
+                                }
+                            }
+                            true
+                        }
+                    }
+                },
+                modifier = Modifier.fillMaxSize()
+            )
+            Text(
+                "Arraste na cena: orbita a câmera 3D",
+                color = Color.White.copy(alpha = 0.5f),
+                fontSize = 10.sp,
+                modifier = Modifier.align(Alignment.BottomCenter).padding(6.dp)
+            )
         }
 
-        // Controles Centrais
         Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 8.dp),
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Text(
-                if (isPlaying) "PLAYING" else "00:00:00",
-                color = if (isPlaying) AccentCyan else Color.Gray,
-                fontSize = 13.sp
-            )
-
-            Button(
-                onClick = { isPlaying = !isPlaying },
-                colors = ButtonDefaults.buttonColors(containerColor = AccentPurple)
-            ) {
-                Text(if (isPlaying) "Pausar" else "▶ Play", color = Color.White)
-            }
-
-            OutlinedButton(onClick = { isCurveEditorOpen = !isCurveEditorOpen }) {
-                Text(
-                    if (isCurveEditorOpen) "Ver Timeline" else "Ver Curvas",
-                    color = AccentCyan,
-                    fontSize = 12.sp
-                )
+            Text(formatTime(timeMsUi), color = AccentGreen, fontSize = 12.sp)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Button(
+                    onClick = { playing = !playing },
+                    colors = ButtonDefaults.buttonColors(containerColor = AccentPurple),
+                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 4.dp)
+                ) { Text(if (playing) "❚❚" else "▶", color = Color.White, fontSize = 13.sp) }
+                Spacer(Modifier.width(6.dp))
+                OutlinedButton(
+                    onClick = { Playback.addKey(CamKey(Playback.timeMs.get(), px, py, pz, rx, ry, rz)) },
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                ) { Text("+ KEY", color = AccentCyan, fontSize = 11.sp) }
+                Spacer(Modifier.width(6.dp))
+                OutlinedButton(
+                    onClick = { Playback.keys.clear() },
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                ) { Text("Limpar", color = Color.Gray, fontSize = 11.sp) }
+                Spacer(Modifier.width(6.dp))
+                OutlinedButton(
+                    onClick = { showCurve = !showCurve },
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                ) { Text(if (showCurve) "Timeline" else "Curva", color = Color.White, fontSize = 11.sp) }
             }
         }
 
-        // Área Inferior: Curvas KeyFlow ou Timeline
-        Box(
+        Row(
             modifier = Modifier
-                .weight(1f)
                 .fillMaxWidth()
-                .background(PanelDark)
+                .height(150.dp)
+                .padding(horizontal = 10.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            if (isCurveEditorOpen) {
-                BezierCurveEditor()
-            } else {
-                MagneticTimeline()
+            Column(
+                modifier = Modifier.weight(1f).verticalScroll(rememberScrollState())
+                    .clip(RoundedCornerShape(10.dp)).background(PanelDark).padding(8.dp)
+            ) {
+                Text("Câmera 3D (Position / Rotation)", color = AccentCyan, fontSize = 11.sp)
+                PoseSlider("Pos X", px, -30f..30f, { px = it })
+                PoseSlider("Pos Y", py, -30f..30f, { py = it })
+                PoseSlider("Pos Z", pz, -40f..40f, { pz = it })
+                PoseSlider("Rot X", rx, -89f..89f, { rx = it })
+                PoseSlider("Rot Y", ry, -180f..180f, { ry = it })
+                PoseSlider("Rot Z", rz, -180f..180f, { rz = it })
+            }
+            Column(
+                modifier = Modifier.weight(1f).verticalScroll(rememberScrollState())
+                    .clip(RoundedCornerShape(10.dp)).background(PanelDark).padding(8.dp)
+            ) {
+                Text("Null Object (move o cubo filho)", color = AccentGreen, fontSize = 11.sp)
+                PoseSlider("Null X", nx, -20f..20f, { nx = it }, AccentGreen)
+                PoseSlider("Null Y", ny, -20f..20f, { ny = it }, AccentGreen)
+                PoseSlider("Null Z", nz, -20f..20f, { nz = it }, AccentGreen)
+                Spacer(Modifier.height(6.dp))
+                Text("Keyframes: ${Playback.keys.size}", color = Color.Gray, fontSize = 10.sp)
             }
         }
-    }
-}
 
-@Composable
-fun InteractiveVideoPreview() {
-    var offsetX by remember { mutableFloatStateOf(0f) }
-    var offsetY by remember { mutableFloatStateOf(0f) }
-    var scale by remember { mutableFloatStateOf(1f) }
-    var rotation by remember { mutableFloatStateOf(0f) }
-
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .pointerInput(Unit) {
-                detectTransformGestures { _, pan, zoom, rot ->
-                    scale = (scale * zoom).coerceIn(0.3f, 4f)
-                    rotation += rot
-                    offsetX += pan.x
-                    offsetY += pan.y
-                }
-            },
-        contentAlignment = Alignment.Center
-    ) {
         Box(
-            modifier = Modifier
-                .graphicsLayer(
-                    translationX = offsetX,
-                    translationY = offsetY,
-                    scaleX = scale,
-                    scaleY = scale,
-                    rotationZ = rotation
-                )
-                .size(160.dp, 90.dp)
-                .clip(RoundedCornerShape(10.dp))
-                .background(AccentPurple.copy(alpha = 0.65f))
-                .border(2.dp, AccentCyan, RoundedCornerShape(10.dp)),
-            contentAlignment = Alignment.Center
+            modifier = Modifier.weight(1f).fillMaxWidth().padding(10.dp)
+                .clip(RoundedCornerShape(10.dp)).background(PanelDark)
         ) {
-            Text(
-                "Camada de Vídeo\n(Mova / Gire / Zoom)",
-                color = Color.White,
-                fontSize = 11.sp
-            )
-        }
-    }
-}
-
-@Composable
-fun BezierCurveEditor() {
-    var p1 by remember { mutableStateOf(Offset(220f, 380f)) }
-    var p2 by remember { mutableStateOf(Offset(620f, 120f)) }
-
-    Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
-        Text(
-            "Curva de Velocidade (Arraste os pontos brancos)",
-            color = AccentCyan,
-            fontSize = 12.sp
-        )
-        Canvas(
-            modifier = Modifier
-                .fillMaxSize()
-                .pointerInput(Unit) {
-                    detectDragGestures { change, _ ->
-                        val touch = change.position
-                        if ((touch - p1).getDistance() < 120f) {
-                            p1 = touch
-                        } else if ((touch - p2).getDistance() < 120f) {
-                            p2 = touch
-                        }
+            if (showCurve) {
+                Column(Modifier.fillMaxSize().padding(10.dp)) {
+                    Text("Curva de Velocidade (controla a velocidade do play)", color = AccentCyan, fontSize = 11.sp)
+                    SpeedCurveView(Modifier.weight(1f).fillMaxWidth())
+                }
+            } else {
+                Column(Modifier.fillMaxSize().padding(10.dp)) {
+                    Text("Timeline — toque p/ buscar • bolinhas = keyframes", color = AccentGreen, fontSize = 11.sp)
+                    TimelineView(timeMsUi, Modifier.weight(1f).fillMaxWidth()) { t ->
+                        Playback.timeMs.set(t); timeMsUi = t
                     }
                 }
-        ) {
-            val start = Offset(40f, size.height - 40f)
-            val end = Offset(size.width - 40f, 40f)
-
-            // Grade de fundo sutil
-            drawLine(Color(0xFF252532), Offset(40f, size.height / 2), Offset(size.width - 40f, size.height / 2), 2f)
-            drawLine(Color(0xFF252532), Offset(size.width / 2, 40f), Offset(size.width / 2, size.height - 40f), 2f)
-
-            val path = Path().apply {
-                moveTo(start.x, start.y)
-                cubicTo(p1.x, p1.y, p2.x, p2.y, end.x, end.y)
             }
-            drawPath(path, color = AccentCyan, style = Stroke(width = 7f))
-
-            drawLine(Color.Gray, start, p1, strokeWidth = 3f)
-            drawLine(Color.Gray, end, p2, strokeWidth = 3f)
-            drawCircle(Color.White, radius = 18f, center = p1)
-            drawCircle(Color.White, radius = 18f, center = p2)
         }
     }
 }
 
 @Composable
-fun MagneticTimeline() {
-    Box(modifier = Modifier.fillMaxSize().padding(12.dp)) {
-        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            TrackItem("V1 • Vídeo Base (4K Proxy)", AccentPurple, 0.9f)
-            TrackItem("FX • Node Glow / Blur", AccentCyan, 0.55f)
-            TrackItem("A1 • Áudio (Beat Sync)", Color(0xFF00E676), 0.85f)
+fun PoseSlider(
+    label: String,
+    value: Float,
+    range: ClosedFloatingPointRange<Float>,
+    onChange: (Float) -> Unit,
+    accent: Color = AccentCyan
+) {
+    Column(Modifier.fillMaxWidth()) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            Text(label, color = accent, fontSize = 10.sp)
+            Text("%.1f".format(value), color = Color.White, fontSize = 10.sp)
         }
-        Box(
-            modifier = Modifier
-                .fillMaxHeight()
-                .width(2.dp)
-                .background(Color.White)
-                .align(Alignment.Center)
+        Slider(
+            value = value,
+            onValueChange = onChange,
+            valueRange = range,
+            modifier = Modifier.fillMaxWidth().height(22.dp),
+            colors = SliderDefaults.colors(thumbColor = accent, activeTrackColor = accent)
         )
     }
 }
 
 @Composable
-fun TrackItem(label: String, color: Color, width: Float) {
-    Box(
-        modifier = Modifier
-            .fillMaxWidth(width)
-            .height(48.dp)
-            .clip(RoundedCornerShape(8.dp))
-            .background(color.copy(alpha = 0.28f))
-            .border(1.dp, color.copy(alpha = 0.7f), RoundedCornerShape(8.dp))
-            .padding(horizontal = 12.dp),
-        contentAlignment = Alignment.CenterStart
+fun TimelineView(timeMs: Long, modifier: Modifier = Modifier, onSeek: (Long) -> Unit) {
+    Canvas(
+        modifier = modifier.pointerInput(Unit) {
+            detectTapGestures { off ->
+                val w = size.width.toFloat()
+                if (w > 0) onSeek(((off.x / w).coerceIn(0f, 1f) * Playback.DURATION_MS).toLong())
+            }
+        }
     ) {
-        Text(label, color = Color.White, fontSize = 12.sp)
+        val w = size.width.toFloat()
+        val h = size.height.toFloat()
+        val mid = h / 2f
+        drawLine(Color(0xFF2A2A38), Offset(0f, mid), Offset(w, mid), 5f)
+        for (i in 0..10) {
+            val x = w * i / 10f
+            drawLine(Color(0xFF3A3A48), Offset(x, mid - 8f), Offset(x, mid + 8f), 2f)
+        }
+        for (k in Playback.keys) {
+            drawCircle(AccentCyan, 9f, Offset((k.t.toFloat() / Playback.DURATION_MS) * w, mid))
+        }
+        val ph = (timeMs.toFloat() / Playback.DURATION_MS) * w
+        drawLine(AccentGreen, Offset(ph, 0f), Offset(ph, h), 5f)
+    }
+}
+
+@Composable
+fun SpeedCurveView(modifier: Modifier = Modifier) {
+    Canvas(
+        modifier = modifier.pointerInput(Unit) {
+            detectDragGestures { change, _ ->
+                val w = size.width.toFloat()
+                val h = size.height.toFloat()
+                if (w <= 0 || h <= 0) return@detectDragGestures
+                val n = Offset(
+                    (change.position.x / w).coerceIn(0.05f, 0.95f),
+                    (1f - change.position.y / h).coerceIn(0.05f, 0.95f)
+                )
+                if ((n - Playback.cp1.value).length < (n - Playback.cp2.value).length) Playback.cp1.value = n
+                else Playback.cp2.value = n
+            }
+        }
+    ) {
+        val w = size.width
+        val h = size.height
+        fun px(o: Offset) = Offset(o.x * w, (1f - o.y) * h)
+        val p0 = px(Offset(0f, 0f))
+        val p3 = px(Offset(1f, 1f))
+        val c1 = px(Playback.cp1.value)
+        val c2 = px(Playback.cp2.value)
+        val path = Path().apply { moveTo(p0.x, p0.y); cubicTo(c1.x, c1.y, c2.x, c2.y, p3.x, p3.y) }
+        drawPath(path, AccentCyan, style = Stroke(width = 6f))
+        drawLine(Color.Gray, p0, c1, strokeWidth = 2f)
+        drawLine(Color.Gray, p3, c2, strokeWidth = 2f)
+        drawCircle(Color.White, radius = 14f, center = c1)
+        drawCircle(Color.White, radius = 14f, center = c2)
     }
 }
