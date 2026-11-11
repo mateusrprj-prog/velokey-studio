@@ -1,6 +1,5 @@
 package com.velokey.studio
 
-import android.opengl.GLSurfaceView
 import android.os.Bundle
 import android.os.SystemClock
 import android.view.MotionEvent
@@ -35,6 +34,8 @@ import com.velokey.studio.scene.Playback
 import com.velokey.studio.scene.VeloRenderer
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
+import org.rajawali3d.surface.IRajawaliSurface
+import org.rajawali3d.surface.RajawaliSurfaceView
 
 val BgDark = Color(0xFF0A0A0E)
 val PanelDark = Color(0xFF14141C)
@@ -112,6 +113,7 @@ fun VeloKeyEditorScreen() {
             .background(BgDark)
             .systemBarsPadding()
     ) {
+        // Barra Superior
         Row(
             modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -129,6 +131,7 @@ fun VeloKeyEditorScreen() {
             }
         }
 
+        // Preview 3D (RajawaliSurfaceView Correto)
         Box(
             modifier = Modifier
                 .weight(1.25f)
@@ -140,12 +143,11 @@ fun VeloKeyEditorScreen() {
         ) {
             AndroidView(
                 factory = { ctx ->
-                    GLSurfaceView(ctx).apply {
-                        setEGLContextClientVersion(3)
-                        setEGLConfigChooser(8, 8, 8, 8, 16, 0)
-                        preserveEGLContextOnPause = true
-                        setRenderer(renderer)
-                        renderMode = GLSurfaceView.RENDERMODE_CONTINUOUSLY
+                    RajawaliSurfaceView(ctx).apply {
+                        setFrameRate(60.0)
+                        setRenderMode(IRajawaliSurface.RENDERMODE_CONTINUOUSLY)
+                        setSurfaceRenderer(renderer)
+                        
                         var lastX = 0f
                         var lastY = 0f
                         setOnTouchListener { _, ev ->
@@ -173,6 +175,7 @@ fun VeloKeyEditorScreen() {
             )
         }
 
+        // Controles da Animação
         Row(
             modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -203,6 +206,7 @@ fun VeloKeyEditorScreen() {
             }
         }
 
+        // Painel de Sliders da Câmera e Null Object
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -235,6 +239,7 @@ fun VeloKeyEditorScreen() {
             }
         }
 
+        // Curva de Velocidade ou Timeline
         Box(
             modifier = Modifier.weight(1f).fillMaxWidth().padding(10.dp)
                 .clip(RoundedCornerShape(10.dp)).background(PanelDark)
@@ -313,12 +318,20 @@ fun SpeedCurveView(modifier: Modifier = Modifier) {
                 val w = size.width.toFloat()
                 val h = size.height.toFloat()
                 if (w <= 0 || h <= 0) return@detectDragGestures
+                
                 val n = Offset(
                     (change.position.x / w).coerceIn(0.05f, 0.95f),
                     (1f - change.position.y / h).coerceIn(0.05f, 0.95f)
                 )
-                if ((n - Playback.cp1.value).length < (n - Playback.cp2.value).length) Playback.cp1.value = n
-                else Playback.cp2.value = n
+                
+                val dist1 = (n - Playback.cp1.value).getDistance()
+                val dist2 = (n - Playback.cp2.value).getDistance()
+                
+                if (dist1 < dist2) {
+                    Playback.cp1.value = n
+                } else {
+                    Playback.cp2.value = n
+                }
             }
         }
     ) {
