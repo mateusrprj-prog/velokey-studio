@@ -34,8 +34,8 @@ import com.velokey.studio.scene.Playback
 import com.velokey.studio.scene.VeloRenderer
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
-import org.rajawali3d.surface.IRajawaliSurface
-import org.rajawali3d.surface.RajawaliSurfaceView
+import org.rajawali3d.view.ISurface
+import org.rajawali3d.view.SurfaceView
 
 val BgDark = Color(0xFF0A0A0E)
 val PanelDark = Color(0xFF14141C)
@@ -113,7 +113,6 @@ fun VeloKeyEditorScreen() {
             .background(BgDark)
             .systemBarsPadding()
     ) {
-        // Barra Superior
         Row(
             modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -124,14 +123,13 @@ fun VeloKeyEditorScreen() {
                 Text("3D • v0.3", color = AccentCyan, fontSize = 11.sp)
                 Spacer(Modifier.width(8.dp))
                 Button(
-                    onClick = { Toast.makeText(context, "Export MP4: Fase 4 (em breve)", Toast.LENGTH_SHORT).show() },
+                    onClick = { Toast.makeText(context, "Export MP4: em breve", Toast.LENGTH_SHORT).show() },
                     colors = ButtonDefaults.buttonColors(containerColor = AccentGreen),
                     contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
                 ) { Text("Export", color = Color.Black, fontSize = 12.sp) }
             }
         }
 
-        // Preview 3D (RajawaliSurfaceView Correto)
         Box(
             modifier = Modifier
                 .weight(1.25f)
@@ -143,27 +141,31 @@ fun VeloKeyEditorScreen() {
         ) {
             AndroidView(
                 factory = { ctx ->
-                    RajawaliSurfaceView(ctx).apply {
-                        setFrameRate(60.0)
-                        setRenderMode(IRajawaliSurface.RENDERMODE_CONTINUOUSLY)
-                        setSurfaceRenderer(renderer)
-                        
-                        var lastX = 0f
-                        var lastY = 0f
-                        setOnTouchListener { _, ev ->
-                            when (ev.actionMasked) {
-                                MotionEvent.ACTION_DOWN -> { lastX = ev.x; lastY = ev.y }
-                                MotionEvent.ACTION_MOVE -> {
-                                    val dx = ev.x - lastX
-                                    val dy = ev.y - lastY
-                                    lastX = ev.x; lastY = ev.y
-                                    ry = (ry + dx * 0.25f) % 360f
-                                    rx = (rx + dy * 0.25f).coerceIn(-89f, 89f)
-                                }
+                    val sv = SurfaceView(ctx)
+                    sv.setFrameRate(60.0)
+                    sv.setRenderMode(ISurface.RENDERMODE_CONTINUOUSLY)
+                    sv.setSurfaceRenderer(renderer)
+
+                    var lastX = 0f
+                    var lastY = 0f
+                    sv.setOnTouchListener { _, ev: MotionEvent ->
+                        when (ev.actionMasked) {
+                            MotionEvent.ACTION_DOWN -> {
+                                lastX = ev.x
+                                lastY = ev.y
                             }
-                            true
+                            MotionEvent.ACTION_MOVE -> {
+                                val dx = ev.x - lastX
+                                val dy = ev.y - lastY
+                                lastX = ev.x
+                                lastY = ev.y
+                                ry = (ry + dx * 0.25f) % 360f
+                                rx = (rx + dy * 0.25f).coerceIn(-89f, 89f)
+                            }
                         }
+                        true
                     }
+                    sv
                 },
                 modifier = Modifier.fillMaxSize()
             )
@@ -175,7 +177,6 @@ fun VeloKeyEditorScreen() {
             )
         }
 
-        // Controles da Animação
         Row(
             modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -206,7 +207,6 @@ fun VeloKeyEditorScreen() {
             }
         }
 
-        // Painel de Sliders da Câmera e Null Object
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -239,7 +239,6 @@ fun VeloKeyEditorScreen() {
             }
         }
 
-        // Curva de Velocidade ou Timeline
         Box(
             modifier = Modifier.weight(1f).fillMaxWidth().padding(10.dp)
                 .clip(RoundedCornerShape(10.dp)).background(PanelDark)
@@ -253,7 +252,8 @@ fun VeloKeyEditorScreen() {
                 Column(Modifier.fillMaxSize().padding(10.dp)) {
                     Text("Timeline — toque p/ buscar • bolinhas = keyframes", color = AccentGreen, fontSize = 11.sp)
                     TimelineView(timeMsUi, Modifier.weight(1f).fillMaxWidth()) { t ->
-                        Playback.timeMs.set(t); timeMsUi = t
+                        Playback.timeMs.set(t)
+                        timeMsUi = t
                     }
                 }
             }
@@ -294,8 +294,8 @@ fun TimelineView(timeMs: Long, modifier: Modifier = Modifier, onSeek: (Long) -> 
             }
         }
     ) {
-        val w = size.width.toFloat()
-        val h = size.height.toFloat()
+        val w = size.width
+        val h = size.height
         val mid = h / 2f
         drawLine(Color(0xFF2A2A38), Offset(0f, mid), Offset(w, mid), 5f)
         for (i in 0..10) {
@@ -317,21 +317,15 @@ fun SpeedCurveView(modifier: Modifier = Modifier) {
             detectDragGestures { change, _ ->
                 val w = size.width.toFloat()
                 val h = size.height.toFloat()
-                if (w <= 0 || h <= 0) return@detectDragGestures
-                
+                if (w <= 0f || h <= 0f) return@detectDragGestures
+
                 val n = Offset(
                     (change.position.x / w).coerceIn(0.05f, 0.95f),
                     (1f - change.position.y / h).coerceIn(0.05f, 0.95f)
                 )
-                
-                val dist1 = (n - Playback.cp1.value).getDistance()
-                val dist2 = (n - Playback.cp2.value).getDistance()
-                
-                if (dist1 < dist2) {
-                    Playback.cp1.value = n
-                } else {
-                    Playback.cp2.value = n
-                }
+                val d1 = (n - Playback.cp1.value).getDistance()
+                val d2 = (n - Playback.cp2.value).getDistance()
+                if (d1 < d2) Playback.cp1.value = n else Playback.cp2.value = n
             }
         }
     ) {
@@ -342,7 +336,10 @@ fun SpeedCurveView(modifier: Modifier = Modifier) {
         val p3 = px(Offset(1f, 1f))
         val c1 = px(Playback.cp1.value)
         val c2 = px(Playback.cp2.value)
-        val path = Path().apply { moveTo(p0.x, p0.y); cubicTo(c1.x, c1.y, c2.x, c2.y, p3.x, p3.y) }
+        val path = Path().apply {
+            moveTo(p0.x, p0.y)
+            cubicTo(c1.x, c1.y, c2.x, c2.y, p3.x, p3.y)
+        }
         drawPath(path, AccentCyan, style = Stroke(width = 6f))
         drawLine(Color.Gray, p0, c1, strokeWidth = 2f)
         drawLine(Color.Gray, p3, c2, strokeWidth = 2f)
